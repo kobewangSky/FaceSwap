@@ -57,31 +57,29 @@ class Face_detect_crop:
         for taskname, model in self.models.items():
             if taskname=='detection':
                 model.prepare(ctx_id, input_size=det_size)
+                # setting thresh if model support
+                if hasattr(model, 'det_thresh'):
+                    model.det_thresh = det_thresh
             else:
                 model.prepare(ctx_id)
 
     def get(self, img, crop_size, max_num=0):
         bboxes, kpss = self.det_model.detect(img,
-                                             threshold=self.det_thresh,
                                              max_num=max_num,
                                              metric='default')
+        
+        # handle appy thresh
+        if bboxes.shape[0] > 0:
+            # get thresh number 
+            det_scores = bboxes[:, 4]
+            # filter over thresh
+            valid_indices = det_scores >= self.det_thresh
+            bboxes = bboxes[valid_indices]
+            if kpss is not None:
+                kpss = kpss[valid_indices]
+        
         if bboxes.shape[0] == 0:
             return None
-        # ret = []
-        # for i in range(bboxes.shape[0]):
-        #     bbox = bboxes[i, 0:4]
-        #     det_score = bboxes[i, 4]
-        #     kps = None
-        #     if kpss is not None:
-        #         kps = kpss[i]
-        #     M, _ = face_align.estimate_norm(kps, crop_size, mode ='None') 
-        #     align_img = cv2.warpAffine(img, M, (crop_size, crop_size), borderValue=0.0)
-        # for i in range(bboxes.shape[0]):
-        #     kps = None
-        #     if kpss is not None:
-        #         kps = kpss[i]
-        #     M, _ = face_align.estimate_norm(kps, crop_size, mode ='None') 
-        #     align_img = cv2.warpAffine(img, M, (crop_size, crop_size), borderValue=0.0)
 
         det_score = bboxes[..., 4]
 

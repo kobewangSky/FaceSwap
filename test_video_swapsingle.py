@@ -17,8 +17,10 @@ from torchvision import transforms
 from models.models import create_model
 from options.test_options import TestOptions
 from insightface_func.face_detect_crop_single import Face_detect_crop
+from face_detection.face_crop import Face_detect_crop_mediapipe
 from util.videoswap import video_swap
 import os
+#python test_video_swapsingle.py --crop_size 224 --use_mask --name people --Arc_path arcface_model/arcface_checkpoint.tar --pic_a_path ./demo_file/Iron_man.jpg --video_path ./demo_file/multi_people_1080p.mp4 --output_path ./output/multi_test_swapsingle.mp4 --temp_path ./temp_results 
 
 def lcm(a, b): return abs(a * b) / fractions.gcd(a, b) if a and b else 0
 
@@ -82,6 +84,6 @@ if __name__ == '__main__':
         latend_id = model.netArc(img_id_downsample)
         latend_id = F.normalize(latend_id, p=2, dim=1)
 
-        video_swap(opt.video_path, latend_id, model, app, opt.output_path,temp_results_dir=opt.temp_path,\
-            no_simswaplogo=opt.no_simswaplogo,use_mask=opt.use_mask,crop_size=crop_size)
+        video_swap(opt.video_path, latend_id, model, app, opt.output_path, temp_results_dir=opt.temp_path,\
+            no_simswaplogo=opt.no_simswaplogo, use_mask=opt.use_mask, crop_size=crop_size)
 

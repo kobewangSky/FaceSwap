@@ -9,6 +9,7 @@ from torchvision import transforms
 from models.models import create_model
 from options.test_options import TestOptions
 
+#python test_one_image.py --use_mask --crop_size 224 --name people --Arc_path arcface_model/arcface_checkpoint.tar --pic_a_path crop_224/6.jpg --pic_b_path crop_224/ds.jpg --output_path output/ 
 
 def lcm(a, b): return abs(a * b) / fractions.gcd(a, b) if a and b else 0
 
