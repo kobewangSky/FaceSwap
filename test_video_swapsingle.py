@@ -17,7 +17,6 @@ from torchvision import transforms
 from models.models import create_model
 from options.test_options import TestOptions
 from insightface_func.face_detect_crop_single import Face_detect_crop
-from face_detection.face_crop import Face_detect_crop_mediapipe
 from util.videoswap import video_swap
 import os
 #python test_video_swapsingle.py --crop_size 224 --use_mask --name people --Arc_path arcface_model/arcface_checkpoint.tar --pic_a_path ./demo_file/Iron_man.jpg --video_path ./demo_file/multi_people_1080p.mp4 --output_path ./output/multi_test_swapsingle.mp4 --temp_path ./temp_results 

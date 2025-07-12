@@ -32,10 +32,18 @@ def _make_scratch_csm(scratch, in_channels, cout, expand):
 
 def _make_efficientnet(model):
     pretrained = nn.Module()
-    pretrained.layer0 = nn.Sequential(model.conv_stem, model.bn1, model.act1, *model.blocks[0:2])
+    
+    # for new version
+    if hasattr(model, 'act1'):
+        act = model.act1
+    else:
+        act = model.act
+        
+    pretrained.layer0 = nn.Sequential(model.conv_stem, model.bn1, act, *model.blocks[0:2])
     pretrained.layer1 = nn.Sequential(*model.blocks[2:3])
     pretrained.layer2 = nn.Sequential(*model.blocks[3:5])
     pretrained.layer3 = nn.Sequential(*model.blocks[5:9])
+    
     return pretrained
 
 

@@ -26,6 +26,7 @@ from util.plot import plot_batch
 
 from models.projected_model import fsModel
 from data.data_loader_Swapping import GetLoader
+#python train.py --name simswap224_test --batchSize 8  --gpu_ids 0 --dataset ./lfw_funneled --Gdeep False
 
 def str2bool(v):
     return v.lower() in ('true')

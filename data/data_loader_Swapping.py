@@ -107,6 +107,8 @@ def GetLoader(  dataset_roots,
     
     c_transforms = []
     
+    # check image all is 224*224
+    c_transforms.append(T.Resize((224, 224)))
     c_transforms.append(T.ToTensor())
     c_transforms = T.Compose(c_transforms)
 
