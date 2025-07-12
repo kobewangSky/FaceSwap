@@ -19,7 +19,7 @@ from options.test_options import TestOptions
 from insightface_func.face_detect_crop_multi import Face_detect_crop
 from util.videoswap import video_swap
 import os
-
+#python test_video_swapmulti.py --crop_size 224 --use_mask --name people --Arc_path arcface_model/arcface_checkpoint.tar --pic_a_path ./demo_file/Iron_man.jpg --video_path ./demo_file/short_clip.mp4 --output_path ./output/multi_test_swapmulti.mp4 --temp_path ./temp_results 
 def lcm(a, b): return abs(a * b) / fractions.gcd(a, b) if a and b else 0
 
 transformer = transforms.Compose([

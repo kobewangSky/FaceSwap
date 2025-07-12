@@ -10,13 +10,21 @@ import torch.nn.functional as F
 from torchvision import transforms
 from models.models import create_model
 from options.test_options import TestOptions
-from insightface_func.face_detect_crop_single import Face_detect_crop
+from insightface_func.face_detect_crop_multi import Face_detect_crop
 from util.videoswap import video_swap
+from util.reverse2original import reverse2wholeimage
+from util.add_watermark import watermark_image
+from util.norm import SpecificNorm
+from parsing_model.model import BiSeNet
 import os
 import tempfile
 import uuid
 from typing import Optional
 import sys
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 app = FastAPI(title="Face Swap API", version="1.0.0")
 
@@ -25,10 +33,51 @@ model = None
 face_app = None
 transformer = None
 transformer_Arcface = None
+logoclass = None
+spNorm = None
+net = None
+
+# 在 app.py 开头添加
+executor = ThreadPoolExecutor(max_workers=4)  # 限制并发数量
+
+@dataclass
+class VideoTask:
+    task_id: str
+    source_path: str
+    video_path: str
+    result_path: str
+    temp_dir: str
+    use_mask: bool
+    status: str = "pending"
+    progress: float = 0.0
+    error: Optional[str] = None
+
+# 任务队列
+task_queue = asyncio.Queue()
+task_status = {}
+
+def process_video_sync(video_path, latend_id, model, face_app, result_path, temp_dir, use_mask):
+    """同步视频处理函数"""
+    try:
+        video_swap(
+            video_path, 
+            latend_id, 
+            model, 
+            face_app, 
+            result_path, 
+            temp_results_dir=temp_dir,
+            no_simswaplogo=False, 
+            use_mask=use_mask, 
+            crop_size=224
+        )
+        return True
+    except Exception as e:
+        print(f"视频处理错误: {e}")
+        return False
 
 def init_model():
     """Initialize model and related components"""
-    global model, face_app, transformer, transformer_Arcface
+    global model, face_app, transformer, transformer_Arcface, logoclass, spNorm, net
     
     # Mock command line arguments
     sys.argv = [
@@ -55,14 +104,26 @@ def init_model():
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     
+    # Initialize components
+    logoclass = watermark_image('./simswaplogo/simswaplogo.png')
+    spNorm = SpecificNorm()
+    
     # Load model
     torch.nn.Module.dump_patches = True
     model = create_model(opt)
     model.eval()
     
-    # Initialize face detection
+    # Initialize face detection (using multi version)
     face_app = Face_detect_crop(name='antelope', root='./insightface_func/models')
     face_app.prepare(ctx_id=0, det_thresh=0.6, det_size=(640,640), mode='None')
+    
+    # Initialize parsing model for masks
+    n_classes = 19
+    net = BiSeNet(n_classes=n_classes)
+    net.cuda()
+    save_pth = os.path.join('./parsing_model/checkpoint', '79999_iter.pth')
+    net.load_state_dict(torch.load(save_pth))
+    net.eval()
     
     print("Model initialization completed")
 
@@ -74,12 +135,14 @@ async def startup_event():
 @app.post("/swap_image")
 async def swap_image(
     source_image: UploadFile = File(..., description="Source image (provides identity)"),
-    target_image: UploadFile = File(..., description="Target image (provides attributes)")
+    target_image: UploadFile = File(..., description="Target image (provides attributes)"),
+    use_mask: bool = True
 ):
     """
-    Image face swapping
+    Whole image face swapping - supports multiple faces
     - source_image: Source image providing identity features
-    - target_image: Target image providing pose, expression, etc.
+    - target_image: Target image where all faces will be replaced
+    - use_mask: Whether to use face parsing mask for better blending
     """
     try:
         task_id = str(uuid.uuid4())
@@ -101,39 +164,57 @@ async def swap_image(
         # Perform face swapping
         with torch.no_grad():
             # Process source image (identity)
-            img_a = Image.open(source_path).convert('RGB')
-            img_a = transformer_Arcface(img_a)
+            img_a_whole = cv2.imread(source_path)
+            img_a_align_crop_list, _ = face_app.get(img_a_whole, 224)
+            
+            if img_a_align_crop_list is None:
+                raise HTTPException(status_code=400, detail="No face detected in source image")
+            
+            # Use first face for identity
+            img_a_align_crop_pil = Image.fromarray(cv2.cvtColor(img_a_align_crop_list[0], cv2.COLOR_BGR2RGB))
+            img_a = transformer_Arcface(img_a_align_crop_pil)
             img_id = img_a.view(-1, img_a.shape[0], img_a.shape[1], img_a.shape[2])
             
-            # Process target image (attributes)
-            img_b = Image.open(target_path).convert('RGB')
-            img_b = transformer(img_b)
-            img_att = img_b.view(-1, img_b.shape[0], img_b.shape[1], img_b.shape[2])
-            
-            # Convert to CUDA tensors
+            # Convert to CUDA tensor
             img_id = img_id.cuda()
-            img_att = img_att.cuda()
             
             # Create identity features
             img_id_downsample = F.interpolate(img_id, size=(112,112))
             latend_id = model.netArc(img_id_downsample)
-            latend_id = latend_id.detach().to('cpu')
-            latend_id = latend_id/np.linalg.norm(latend_id,axis=1,keepdims=True)
-            latend_id = latend_id.to('cuda')
+            latend_id = F.normalize(latend_id, p=2, dim=1)
             
-            # Generate swapped result
-            img_fake = model(img_id, img_att, latend_id, latend_id, True)
+            # Process target image (multiple faces)
+            img_b_whole = cv2.imread(target_path)
+            img_b_align_crop_list, b_mat_list = face_app.get(img_b_whole, 224)
             
-            # Process output
-            full = img_fake[0].detach()
-            full = full.permute(1, 2, 0)
-            output = full.to('cpu')
-            output = np.array(output)
-            output = output[..., ::-1]  # RGB to BGR
-            output = output * 255
+            if img_b_align_crop_list is None:
+                raise HTTPException(status_code=400, detail="No face detected in target image")
             
-            # Save result
-            cv2.imwrite(result_path, output)
+            # Process each face
+            swap_result_list = []
+            b_align_crop_tenor_list = []
+            
+            for b_align_crop in img_b_align_crop_list:
+                b_align_crop_tenor = _totensor(cv2.cvtColor(b_align_crop, cv2.COLOR_BGR2RGB))[None,...].cuda()
+                swap_result = model(None, b_align_crop_tenor, latend_id, None, True)[0]
+                swap_result_list.append(swap_result)
+                b_align_crop_tenor_list.append(b_align_crop_tenor)
+            
+            # Reverse to whole image
+            parsing_model = net if use_mask else None
+            reverse2wholeimage(
+                b_align_crop_tenor_list, 
+                swap_result_list, 
+                b_mat_list, 
+                224, 
+                img_b_whole, 
+                logoclass, 
+                result_path, 
+                no_simswaplogo=False, 
+                pasring_model=parsing_model, 
+                use_mask=use_mask, 
+                norm=spNorm
+            )
         
         # Return result file
         return FileResponse(
@@ -148,12 +229,11 @@ async def swap_image(
 @app.post("/swap_video")
 async def swap_video(
     source_image: UploadFile = File(..., description="Source image (provides identity)"),
-    target_video: UploadFile = File(..., description="Target video")
+    target_video: UploadFile = File(..., description="Target video"),
+    use_mask: bool = True
 ):
     """
-    Video face swapping
-    - source_image: Source image providing identity features
-    - target_video: Target video where faces will be replaced with source image's face
+    Video face swapping - supports multiple faces
     """
     try:
         # Generate unique ID
@@ -179,8 +259,13 @@ async def swap_video(
         with torch.no_grad():
             # Process source image
             img_a_whole = cv2.imread(source_path)
-            img_a_align_crop, _ = face_app.get(img_a_whole, 224)
-            img_a_align_crop_pil = Image.fromarray(cv2.cvtColor(img_a_align_crop[0], cv2.COLOR_BGR2RGB))
+            img_a_align_crop_list, _ = face_app.get(img_a_whole, 224)
+            
+            if img_a_align_crop_list is None:
+                raise HTTPException(status_code=400, detail="No face detected in source image")
+            
+            # Use first face for identity
+            img_a_align_crop_pil = Image.fromarray(cv2.cvtColor(img_a_align_crop_list[0], cv2.COLOR_BGR2RGB))
             img_a = transformer_Arcface(img_a_align_crop_pil)
             img_id = img_a.view(-1, img_a.shape[0], img_a.shape[1], img_a.shape[2])
             
@@ -192,18 +277,16 @@ async def swap_video(
             latend_id = model.netArc(img_id_downsample)
             latend_id = F.normalize(latend_id, p=2, dim=1)
             
-            # Process video
-            video_swap(
-                video_path, 
-                latend_id, 
-                model, 
-                face_app, 
-                result_path, 
-                temp_results_dir=temp_dir,
-                no_simswaplogo=False, 
-                use_mask=True, 
-                crop_size=224
+            # 异步处理视频
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                executor, 
+                process_video_sync, 
+                video_path, latend_id, model, face_app, result_path, temp_dir, use_mask
             )
+            
+            if not success:
+                raise HTTPException(status_code=500, detail="Video processing failed")
         
         # Return result video
         return FileResponse(
@@ -222,8 +305,8 @@ async def root():
         "message": "Face Swap API",
         "version": "1.0.0",
         "endpoints": {
-            "swap_image": "/swap_image - Image face swapping",
-            "swap_video": "/swap_video - Video face swapping"
+            "swap_image": "/swap_image - Whole image face swapping (multiple faces)",
+            "swap_video": "/swap_video - Video face swapping (multiple faces)"
         }
     }
 
