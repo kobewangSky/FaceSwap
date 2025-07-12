@@ -1,0 +1,22 @@
+# requirements.txt
+torch==2.7.1
+torchvision==0.22.1
+fastapi==0.116.1
+uvicorn==0.35.0
+python-multipart==0.0.20
+opencv-python==4.11.0.86
+pillow==11.3.0
+numpy==2.2.6
+insightface==0.7.3
+onnxruntime-gpu==1.22.0
+timm==0.5.4
+tensorboard==2.19.0
+scipy==1.16.0
+scikit-image==0.25.2
+matplotlib==3.10.3
+moviepy==2.2.1
+albumentations==2.0.8
+easydict==1.13
+tqdm==4.67.1
+requests==2.32.4
+PyYAML==6.0.2

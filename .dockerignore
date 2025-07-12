@@ -1,0 +1,55 @@
+# .dockerignore (完整版)
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.Python
+.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+.pytest_cache
+.coverage
+.nyc_output
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+.vscode
+*.log
+temp/*
+output/*
+*.tmp
+*.swp
+*.swo
+**/.ipynb_checkpoints
+*.egg-info
+build/
+dist/
+*.whl
+
+# 重要：排除虚拟环境
+venv/
+env/
+.env
+.venv
+ENV/
+env.bak/
+venv.bak/
+
+# 排除数据集和大文件
+lfw_funneled/
+*.tar
+*.zip
+*.gz
+*.rar
+*.7z
+
+# 排除模型文件（如果很大）
+checkpoints/
+*.pth
+*.pkl
+*.h5
+*.ckpt
