@@ -44,9 +44,6 @@ cd FaceSwap
 conda create -n faceswap python=3.8
 conda activate faceswap
 
-# Install PyTorch (with CUDA support)
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
-
 # Install other dependencies
 pip install -r requirements.txt
 ```
@@ -200,7 +197,52 @@ curl http://localhost:8000/health
 - Face parsing mask for better blending
 - Support for multiple faces in single image/video
 
-### 4. API Usage
+### 4. Real-time Camera Face Swap
+
+Use `test_inference_camera.py` for real-time face swapping with webcam:
+
+```bash
+# Start real-time camera face swap
+python test_inference_camera.py --source ./demo_file/Iron_man.jpg --crop_size 224 --use_mask --port 5000
+```
+
+**Parameters:**
+- `--source`: Path to source image (provides face identity)
+- `--crop_size`: Input image size (default: 224)
+- `--use_mask`: Use face parsing mask for better blending
+- `--port`: Web server port (default: 5000)
+
+**Features:**
+- **Multi-threaded Architecture**: 
+  - **Camera Thread**: High-FPS camera capture (~30 FPS)
+  - **Processing Thread**: Face swap computation (~1-2 FPS)
+  - **Display Thread**: Web interface updates (~30 FPS)
+- **Web Interface**: Real-time video feed with controls
+- **Performance Monitoring**: Live FPS and processing time display
+- **Interactive Controls**:
+  - Start/Stop camera
+  - Toggle between original and swapped view
+  - Save current frame
+- **Optimized Performance**:
+  - Separate threads prevent blocking
+  - Frame queues for smooth playback
+  - Efficient memory management
+
+**Web Interface:**
+1. Open browser and go to `http://localhost:5000`
+2. Click "Start Camera" to begin face swapping
+3. Use "Toggle View" to switch between original and swapped
+4. Click "Save Frame" to capture the current frame
+5. Monitor real-time performance metrics
+
+**Performance Metrics:**
+- **Camera FPS**: Real-time camera capture rate
+- **Process FPS**: Face swap processing rate  
+- **Process Time**: Time per face swap operation
+- **Memory Usage**: GPU memory consumption
+
+
+### 5. API Usage
 
 #### Using curl commands
 

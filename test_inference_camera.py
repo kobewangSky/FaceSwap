@@ -1,5 +1,5 @@
 '''
-Real-time face swap using camera input with web interface (Fixed)
+Real-time face swap using camera input with web interface (Dual-threaded for better FPS)
 '''
 
 import cv2
@@ -20,8 +20,8 @@ import argparse
 import time
 import sys
 import threading
+import queue
 from flask import Flask, render_template, Response, request, jsonify
-import tempfile
 
 transformer_Arcface = transforms.Compose([
         transforms.ToTensor(),
@@ -44,8 +44,6 @@ def reverse2wholeimage_realtime(b_align_crop_tenor_list, swaped_imgs, mats, crop
     img_mask_list = []
     if use_mask:
         smooth_mask = SoftErosion(kernel_size=17, threshold=0.9, iterations=7).cuda()
-    else:
-        pass
 
     for swaped_img, mat, source_img in zip(swaped_imgs, mats, b_align_crop_tenor_list):
         swaped_img = swaped_img.cpu().detach().numpy().transpose((1, 2, 0))
@@ -127,6 +125,20 @@ class RealtimeFaceSwapWeb:
         self.processing_time = 0
         self.fps = 0
         
+        # Threading variables
+        self.frame_queue = queue.Queue(maxsize=3)  # Buffer for camera frames
+        self.result_queue = queue.Queue(maxsize=2)  # Buffer for processed frames
+        self.latest_frame = None
+        self.latest_processed = None
+        self.camera_fps = 0
+        self.process_fps = 0
+        self.camera_frame_count = 0
+        self.process_frame_count = 0
+        
+        # Thread references
+        self.camera_thread_ref = None
+        self.process_thread_ref = None
+        
         # Initialize models
         self.setup_models()
         self.setup_source_identity(source_image_path)
@@ -138,7 +150,7 @@ class RealtimeFaceSwapWeb:
         # Create options
         original_argv = sys.argv.copy()
         try:
-            sys.argv = ['realtime_camera_swap_web_fixed.py']
+            sys.argv = ['test_inference_camera.py']
             opt = TestOptions().parse(save=False)
             
             opt.crop_size = self.crop_size
@@ -239,55 +251,194 @@ class RealtimeFaceSwapWeb:
             print(f"Error processing frame: {e}")
             return frame
     
-    def camera_thread(self, camera_id=0):
-        """Camera capture thread"""
+    def camera_capture_thread(self, camera_id=0):
+        """Dedicated camera reading thread - high FPS"""
         cap = cv2.VideoCapture(camera_id)
         if not cap.isOpened():
             print(f"Could not open camera {camera_id}")
             return
         
+        # Optimize camera settings
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         cap.set(cv2.CAP_PROP_FPS, 30)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size
         
-        print("Camera thread started!")
+        print("Camera capture thread started!")
+        camera_start_time = time.time()
         
         while self.running:
             ret, frame = cap.read()
             if not ret:
+                print("Failed to read frame")
                 continue
-                
+            
             # Mirror frame
             frame = cv2.flip(frame, 1)
+            self.latest_frame = frame.copy()
             
-            # Process frame
-            start_time = time.time()
-            if self.show_original:
-                result_frame = frame.copy()
-            else:
-                result_frame = self.process_frame(frame)
-            self.processing_time = time.time() - start_time
+            # Calculate camera FPS
+            self.camera_frame_count += 1
+            camera_elapsed = time.time() - camera_start_time
+            self.camera_fps = self.camera_frame_count / camera_elapsed if camera_elapsed > 0 else 0
             
-            # Update FPS
-            self.frame_count += 1
-            elapsed_time = time.time() - self.start_time
-            self.fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
+            # Put frame into queue (discard old frames if queue is full)
+            try:
+                if not self.frame_queue.full():
+                    self.frame_queue.put(frame, block=False)
+                else:
+                    # Queue is full, remove old frame before adding new frame
+                    try:
+                        self.frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    self.frame_queue.put(frame, block=False)
+            except queue.Full:
+                pass  # Skip if still full
             
-            # Add text overlay
-            status_text = "Original" if self.show_original else "Face Swapped"
-            cv2.putText(result_frame, f'Status: {status_text}', (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(result_frame, f'FPS: {self.fps:.1f}', (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(result_frame, f'Process: {self.processing_time*1000:.1f}ms', (10, 90), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            self.current_frame = result_frame
-            
-            time.sleep(0.03)  # Small delay to prevent too high CPU usage
+            # Very short delay to maintain high FPS
+            time.sleep(0.01)
         
         cap.release()
-        print("Camera thread stopped!")
+        print("Camera capture thread stopped!")
+    
+    def frame_processing_thread(self):
+        """Dedicated face swap processing thread"""
+        print("Frame processing thread started!")
+        process_start_time = time.time()
+        
+        while self.running:
+            try:
+                # Get latest frame from queue
+                frame = self.frame_queue.get(timeout=0.1)
+                
+                # 处理帧
+                start_time = time.time()
+                if self.show_original:
+                    processed_frame = frame.copy()
+                else:
+                    processed_frame = self.process_frame(frame)
+                self.processing_time = time.time() - start_time
+                
+                # 计算处理FPS
+                self.process_frame_count += 1
+                process_elapsed = time.time() - process_start_time
+                self.process_fps = self.process_frame_count / process_elapsed if process_elapsed > 0 else 0
+                
+                # 更新最新处理结果
+                self.latest_processed = processed_frame
+                
+                # 将结果放入结果队列
+                try:
+                    if not self.result_queue.full():
+                        self.result_queue.put(processed_frame, block=False)
+                    else:
+                        # 队列满了，取出旧结果再放入新结果
+                        try:
+                            self.result_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        self.result_queue.put(processed_frame, block=False)
+                except queue.Full:
+                    pass
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Error in processing thread: {e}")
+                continue
+        
+        print("Frame processing thread stopped!")
+    
+    def display_update_thread(self):
+        """专门负责显示更新的线程"""
+        print("Display update thread started!")
+        
+        while self.running:
+            try:
+                # 优先使用处理队列中的结果
+                if not self.result_queue.empty():
+                    result_frame = self.result_queue.get_nowait()
+                elif self.latest_processed is not None:
+                    result_frame = self.latest_processed
+                elif self.latest_frame is not None:
+                    result_frame = self.latest_frame
+                else:
+                    time.sleep(0.01)
+                    continue
+                
+                # 添加状态信息
+                display_frame = result_frame.copy()
+                status_text = "Original" if self.show_original else "Face Swapped"
+                
+                cv2.putText(display_frame, f'Status: {status_text}', (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cv2.putText(display_frame, f'Camera FPS: {self.camera_fps:.1f}', (10, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cv2.putText(display_frame, f'Process FPS: {self.process_fps:.1f}', (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cv2.putText(display_frame, f'Process Time: {self.processing_time*1000:.0f}ms', (10, 120), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+                # 更新当前显示帧
+                self.current_frame = display_frame
+                
+                # 更新总体FPS计数
+                self.frame_count += 1
+                elapsed_time = time.time() - self.start_time
+                self.fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
+                
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(f"Error in display thread: {e}")
+            
+            time.sleep(0.03)  # 约30FPS的显示更新
+        
+        print("Display update thread stopped!")
+    
+    def start_camera_system(self, camera_id=0):
+        """启动三线程摄像头系统"""
+        if self.running:
+            return
+        
+        self.running = True
+        self.frame_count = 0
+        self.camera_frame_count = 0
+        self.process_frame_count = 0
+        self.start_time = time.time()
+        
+        # 清空队列
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        while not self.result_queue.empty():
+            try:
+                self.result_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        # 启动三个线程
+        self.camera_thread_ref = threading.Thread(target=self.camera_capture_thread, args=(camera_id,))
+        self.process_thread_ref = threading.Thread(target=self.frame_processing_thread)
+        self.display_thread_ref = threading.Thread(target=self.display_update_thread)
+        
+        self.camera_thread_ref.daemon = True
+        self.process_thread_ref.daemon = True
+        self.display_thread_ref.daemon = True
+        
+        self.camera_thread_ref.start()
+        self.process_thread_ref.start()
+        self.display_thread_ref.start()
+        
+        print("Multi-threaded camera system started!")
+    
+    def stop_camera_system(self):
+        """停止摄像头系统"""
+        self.running = False
+        print("Stopping camera system...")
 
 # Flask app
 app = Flask(__name__)
@@ -301,18 +452,18 @@ def index():
 def start_camera():
     global face_swap_instance
     if face_swap_instance is not None:
-        face_swap_instance.running = True
-        camera_thread = threading.Thread(target=face_swap_instance.camera_thread, args=(0,))
-        camera_thread.daemon = True
-        camera_thread.start()
-        return jsonify({'status': 'started'})
+        if not face_swap_instance.running:
+            face_swap_instance.start_camera_system(0)
+            return jsonify({'status': 'started'})
+        else:
+            return jsonify({'status': 'already_running'})
     return jsonify({'status': 'error', 'message': 'Face swap not initialized'})
 
 @app.route('/stop_camera', methods=['POST'])
 def stop_camera():
     global face_swap_instance
     if face_swap_instance is not None:
-        face_swap_instance.running = False
+        face_swap_instance.stop_camera_system()
         return jsonify({'status': 'stopped'})
     return jsonify({'status': 'error'})
 
@@ -328,17 +479,15 @@ def toggle_view():
 def save_frame():
     global face_swap_instance
     if face_swap_instance is not None and face_swap_instance.current_frame is not None:
-        # Create a unique filename
         timestamp = int(time.time())
         filename = f'capture_{timestamp}.jpg'
         
-        # Save the frame
         try:
             cv2.imwrite(filename, face_swap_instance.current_frame)
             return jsonify({'status': 'saved', 'filename': filename})
         except Exception as e:
             return jsonify({'status': 'error', 'message': str(e)})
-    return jsonify({'status': 'error'})
+    return jsonify({'status': 'error', 'message': 'No frame available'})
 
 @app.route('/video_feed')
 def video_feed():
@@ -347,21 +496,23 @@ def video_feed():
         while True:
             if face_swap_instance is not None and face_swap_instance.current_frame is not None:
                 try:
-                    ret, buffer = cv2.imencode('.jpg', face_swap_instance.current_frame)
+                    # Encode frame as JPEG
+                    ret, buffer = cv2.imencode('.jpg', face_swap_instance.current_frame, 
+                                             [cv2.IMWRITE_JPEG_QUALITY, 85])
                     if ret:
                         frame = buffer.tobytes()
                         yield (b'--frame\r\n'
                                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
                 except Exception as e:
                     print(f"Error encoding frame: {e}")
-            time.sleep(0.1)
+            time.sleep(0.03)  # 约30FPS
     
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def main():
     global face_swap_instance
     
-    parser = argparse.ArgumentParser(description='Real-time face swap using camera with web interface')
+    parser = argparse.ArgumentParser(description='Real-time face swap using camera with web interface (Multi-threaded)')
     parser.add_argument('--source', type=str, required=True, help='Path to source image')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size')
     parser.add_argument('--use_mask', action='store_true', default=True, help='Use mask')
@@ -375,6 +526,7 @@ def main():
     
     try:
         # Initialize face swap
+        print("Initializing multi-threaded face swap system...")
         face_swap_instance = RealtimeFaceSwapWeb(
             source_image_path=args.source,
             crop_size=args.crop_size,
@@ -385,35 +537,36 @@ def main():
         os.makedirs('templates', exist_ok=True)
         
         # Create HTML template
-        html_content = """<!DOCTYPE html>
+        html_content = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>Real-time Face Swap</title>
+    <title>Real-time Face Swap (Multi-threaded)</title>
+    <meta charset="UTF-8">
     <style>
-        body { 
+        body {{ 
             font-family: Arial, sans-serif; 
             text-align: center; 
             padding: 20px;
             background-color: #f0f0f0;
-        }
-        .container { 
+        }}
+        .container {{ 
             max-width: 800px; 
             margin: 0 auto;
             background-color: white;
             padding: 20px;
             border-radius: 10px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .video-container { 
+        }}
+        .video-container {{ 
             margin: 20px 0;
             border: 3px solid #333;
             border-radius: 10px;
             overflow: hidden;
-        }
-        .controls { 
+        }}
+        .controls {{ 
             margin: 20px 0;
-        }
-        button { 
+        }}
+        button {{ 
             padding: 12px 24px; 
             margin: 8px; 
             font-size: 16px; 
@@ -423,43 +576,50 @@ def main():
             background-color: #007bff;
             color: white;
             transition: background-color 0.3s;
-        }
-        button:hover {
+        }}
+        button:hover {{
             background-color: #0056b3;
-        }
-        #videoFeed { 
+        }}
+        #videoFeed {{ 
             width: 100%;
             height: auto;
             max-width: 640px;
-        }
-        .info { 
+        }}
+        .info {{ 
             margin: 10px 0; 
             color: #666;
             font-size: 14px;
-        }
-        .status {
+        }}
+        .status {{
             margin: 10px 0;
             padding: 10px;
             background-color: #e7f3ff;
             border-radius: 5px;
             color: #0066cc;
-        }
-        h1 {
+        }}
+        .performance {{
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #fff3e0;
+            border-radius: 5px;
+            color: #e65100;
+        }}
+        h1 {{
             color: #333;
             margin-bottom: 10px;
-        }
+        }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Real-time Face Swap</h1>
+        <h1>Real-time Face Swap (Multi-threaded)</h1>
         
         <div class="info">
-            <p><strong>Source Image:</strong> """ + args.source + """</p>
+            <p><strong>Source Image:</strong> {args.source}</p>
         </div>
         
         <div class="video-container">
-            <img id="videoFeed" src="{{ url_for('video_feed') }}" alt="Video Feed">
+            <img id="videoFeed" src="/video_feed" alt="Video Feed">
         </div>
         
         <div class="controls">
@@ -469,13 +629,23 @@ def main():
             <button onclick="saveFrame()">Save Frame</button>
         </div>
         
+        <div class="performance">
+            <p><strong>Multi-threaded Performance:</strong></p>
+            <ul style="text-align: left; display: inline-block;">
+                <li>Camera FPS: Real-time camera capture rate</li>
+                <li>Process FPS: Face swap processing rate</li>
+                <li>Display FPS: Web interface update rate</li>
+                <li>Process Time: Time per face swap operation</li>
+            </ul>
+        </div>
+        
         <div class="status">
             <p><strong>Instructions:</strong></p>
             <ul style="text-align: left; display: inline-block;">
-                <li>Click "Start Camera" to begin face swapping</li>
+                <li>Click "Start Camera" to begin multi-threaded face swapping</li>
                 <li>Click "Toggle View" to switch between original and swapped</li>
                 <li>Click "Save Frame" to save the current frame</li>
-                <li>Click "Stop Camera" to stop the camera</li>
+                <li>Click "Stop Camera" to stop all threads</li>
             </ul>
         </div>
     </div>
@@ -483,51 +653,49 @@ def main():
     <script>
         let isStarted = false;
         
-        function startCamera() {
-            if (!isStarted) {
-                fetch('/start_camera', {method: 'POST'})
-                    .then(response => response.json())
-                    .then(data => {
-                        console.log('Camera started:', data);
+        function startCamera() {{
+            fetch('/start_camera', {{method: 'POST'}})
+                .then(response => response.json())
+                .then(data => {{
+                    console.log('Camera started:', data);
+                    if (data.status === 'started') {{
                         isStarted = true;
-                    })
-                    .catch(error => console.error('Error:', error));
-            }
-        }
+                    }}
+                }})
+                .catch(error => console.error('Error:', error));
+        }}
         
-        function stopCamera() {
-            if (isStarted) {
-                fetch('/stop_camera', {method: 'POST'})
-                    .then(response => response.json())
-                    .then(data => {
-                        console.log('Camera stopped:', data);
-                        isStarted = false;
-                    })
-                    .catch(error => console.error('Error:', error));
-            }
-        }
-        
-        function toggleView() {
-            fetch('/toggle_view', {method: 'POST'})
+        function stopCamera() {{
+            fetch('/stop_camera', {{method: 'POST'}})
                 .then(response => response.json())
-                .then(data => {
+                .then(data => {{
+                    console.log('Camera stopped:', data);
+                    isStarted = false;
+                }})
+                .catch(error => console.error('Error:', error));
+        }}
+        
+        function toggleView() {{
+            fetch('/toggle_view', {{method: 'POST'}})
+                .then(response => response.json())
+                .then(data => {{
                     console.log('View toggled:', data);
-                })
+                }})
                 .catch(error => console.error('Error:', error));
-        }
+        }}
         
-        function saveFrame() {
-            fetch('/save_frame', {method: 'POST'})
+        function saveFrame() {{
+            fetch('/save_frame', {{method: 'POST'}})
                 .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'saved') {
+                .then(data => {{
+                    if (data.status === 'saved') {{
                         alert('Frame saved as: ' + data.filename);
-                    } else {
-                        alert('Error saving frame: ' + data.message);
-                    }
-                })
+                    }} else {{
+                        alert('Error saving frame: ' + (data.message || 'Unknown error'));
+                    }}
+                }})
                 .catch(error => console.error('Error:', error));
-        }
+        }}
     </script>
 </body>
 </html>"""
@@ -536,11 +704,11 @@ def main():
         with open('templates/index.html', 'w', encoding='utf-8') as f:
             f.write(html_content)
         
-        print(f"Starting web server on http://localhost:{args.port}")
+        print(f"Starting multi-threaded web server on http://localhost:{args.port}")
         print("Open your browser and go to the URL above")
         print("Press Ctrl+C to stop the server")
         
-        app.run(host='0.0.0.0', port=args.port, debug=False)
+        app.run(host='0.0.0.0', port=args.port, debug=False, threaded=True)
         
     except Exception as e:
         print(f"Error: {str(e)}")
