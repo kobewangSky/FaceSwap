@@ -8,9 +8,12 @@ A comprehensive face swapping system using deep learning with training pipeline,
 
 - **Training Pipeline**: Complete training script with tensorboard visualization
 - **Production API**: FastAPI-based REST API with multi-threading support
+- **Real-time Camera**: Web-based real-time face swapping with live camera feed
 - **Dataset Management**: Tools for dataset updates, validation, and duplicate detection
 - **Video Processing**: Face swapping on video frames with temporal consistency
 - **Multi-face Support**: Handle multiple faces in single image/video
+- **Enhanced Face Detection**: Retry mechanism with adaptive thresholds for better detection
+- **Docker Support**: Complete containerization with GPU support
 
 ## 📊 Dataset
 
@@ -166,6 +169,8 @@ Use `app.py` to start the production API server:
 python app.py
 ```
 
+The API now includes an enhanced **Real-time Camera Interface** accessible at `http://localhost:8000/camera`
+
 **API Endpoints:**
 
 #### Image Face Swap
@@ -186,20 +191,44 @@ curl -X POST "http://localhost:8000/swap_video" \
   --output result.mp4
 ```
 
+#### Real-time Camera Interface
+- **Web Interface**: `http://localhost:8000/camera`
+- **Upload Source**: `POST /camera/upload_source`
+- **Start Camera**: `POST /camera/start/{session_id}`
+- **Stop Camera**: `POST /camera/stop/{session_id}`
+- **Video Feed**: `GET /camera/feed/{session_id}`
+
 #### Health Check
 ```bash
 curl http://localhost:8000/health
 ```
 
 **API Features:**
-- Multi-threading support (4 concurrent workers)
-- Automatic face detection and cropping
-- Face parsing mask for better blending
-- Support for multiple faces in single image/video
+- **Multi-threading support** (4 concurrent workers)
+- **Enhanced face detection** with retry mechanism and adaptive thresholds
+- **Real-time camera processing** with separate threads for capture, processing, and display
+- **Face parsing mask** for better blending
+- **Support for multiple faces** in single image/video
+- **Session management** for camera instances
+- **Performance monitoring** with live FPS display
 
 ### 4. Real-time Camera Face Swap
 
-Use `test_inference_camera.py` for real-time face swapping with webcam:
+#### Option A: Web-based Interface (Recommended)
+Use the enhanced camera interface built into the main API:
+
+```bash
+# Start API server
+python app.py
+
+# Open browser and go to: http://localhost:8000/camera
+```
+
+**Web Interface Features:**
+1. **Upload source image** (the face identity you want to swap to)
+2. **Start camera** to begin real-time face swapping
+3. **Live performance monitoring** with FPS display
+4. **Session management** for multiple users
 
 ```bash
 # Start real-time camera face swap

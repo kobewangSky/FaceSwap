@@ -119,6 +119,60 @@ def detect_faces_with_retry(face_app, img, crop_size, max_retries=3):
     print(f"All detection attempts failed. No faces detected.")
     return None
 
+def process_source_image_for_identity(source_path, crop_size=224):
+    """
+    Process source image to extract identity features with automatic pre-crop detection
+    Returns the identity latent vector
+    """
+    with torch.no_grad():
+        # Load original image to check dimensions
+        img_original = cv2.imread(source_path)
+        if img_original is None:
+            raise ValueError(f"Could not load source image: {source_path}")
+        
+        height, width = img_original.shape[:2]
+        print(f"Source image dimensions: {width}x{height}")
+        
+        # Check if image is already cropped to face size (within ±50px of crop_size)
+        crop_tolerance = 50
+        is_pre_cropped = (abs(width - crop_size) <= crop_tolerance and 
+                        abs(height - crop_size) <= crop_tolerance)
+        
+        if is_pre_cropped:
+            print(f"Detected pre-cropped face image ({width}x{height}), skipping face detection...")
+            # Resize to exact crop_size and use directly
+            img_a_align_crop = cv2.resize(img_original, (crop_size, crop_size))
+            img_a_align_crop_pil = Image.fromarray(cv2.cvtColor(img_a_align_crop, cv2.COLOR_BGR2RGB))
+        else:
+            print("Using face detection pipeline...")
+            # Preprocess image
+            img_a_whole = preprocess_image_for_detection(source_path)
+            
+            # Use face detection with retry
+            detection_result = detect_faces_with_retry(face_app, img_a_whole, crop_size)
+            
+            if detection_result is None:
+                raise ValueError("No face detected in source image after multiple attempts")
+            
+            img_a_align_crop_list, _ = detection_result
+            
+            if len(img_a_align_crop_list) == 0:
+                raise ValueError("No face detected in source image")
+            
+            # Use the first detected face
+            img_a_align_crop_pil = Image.fromarray(cv2.cvtColor(img_a_align_crop_list[0], cv2.COLOR_BGR2RGB))
+        
+        # Extract identity features
+        img_a = transformer_Arcface(img_a_align_crop_pil)
+        img_id = img_a.view(-1, img_a.shape[0], img_a.shape[1], img_a.shape[2])
+        
+        img_id = img_id.cuda()
+        img_id_downsample = F.interpolate(img_id, size=(112,112))
+        latend_id = model.netArc(img_id_downsample)
+        latend_id = F.normalize(latend_id, p=2, dim=1)
+        
+        return latend_id
+
 def reverse2wholeimage_realtime(b_align_crop_tenor_list, swaped_imgs, mats, crop_size, oriimg, logoclass, 
                                no_simswaplogo=False, pasring_model=None, norm=None, use_mask=False):
     """
@@ -230,32 +284,8 @@ class RealtimeFaceSwapCamera:
         print(f"Processing source image: {source_image_path}")
         
         try:
-            with torch.no_grad():
-                # Preprocess image
-                img_a_whole = preprocess_image_for_detection(source_image_path)
-                
-                # Use face detection with retry
-                detection_result = detect_faces_with_retry(face_app, img_a_whole, self.crop_size)
-                
-                if detection_result is None:
-                    raise ValueError("No face detected in source image after multiple attempts")
-                
-                img_a_align_crop_list, _ = detection_result
-                
-                if len(img_a_align_crop_list) == 0:
-                    raise ValueError("No face detected in source image")
-                
-                # Use the first detected face
-                img_a_align_crop_pil = Image.fromarray(cv2.cvtColor(img_a_align_crop_list[0], cv2.COLOR_BGR2RGB))
-                img_a = transformer_Arcface(img_a_align_crop_pil)
-                img_id = img_a.view(-1, img_a.shape[0], img_a.shape[1], img_a.shape[2])
-                
-                img_id = img_id.cuda()
-                img_id_downsample = F.interpolate(img_id, size=(112,112))
-                self.latend_id = model.netArc(img_id_downsample)
-                self.latend_id = F.normalize(self.latend_id, p=2, dim=1)
-                
-                print("Source identity extracted successfully!")
+            self.latend_id = process_source_image_for_identity(source_image_path, self.crop_size)
+            print("Source identity extracted successfully!")
                 
         except Exception as e:
             print(f"Error in setup_source_identity: {e}")
@@ -569,25 +599,11 @@ async def swap_image(
         
         # Perform face swapping
         with torch.no_grad():
-            # Process source image
-            img_a_whole = preprocess_image_for_detection(source_path)
-            
-            # Use face detection with retry
-            detection_result = detect_faces_with_retry(face_app, img_a_whole, 224)
-            
-            if detection_result is None:
-                raise HTTPException(status_code=400, detail="No face detected in source image. Please use a clear image with a visible face.")
-            
-            img_a_align_crop_list, _ = detection_result
-            
-            img_a_align_crop_pil = Image.fromarray(cv2.cvtColor(img_a_align_crop_list[0], cv2.COLOR_BGR2RGB))
-            img_a = transformer_Arcface(img_a_align_crop_pil)
-            img_id = img_a.view(-1, img_a.shape[0], img_a.shape[1], img_a.shape[2])
-            
-            img_id = img_id.cuda()
-            img_id_downsample = F.interpolate(img_id, size=(112,112))
-            latend_id = model.netArc(img_id_downsample)
-            latend_id = F.normalize(latend_id, p=2, dim=1)
+            # Process source image with automatic pre-crop detection
+            try:
+                latend_id = process_source_image_for_identity(source_path, 224)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Failed to process source image: {str(e)}")
             
             # Process target image
             img_b_whole = preprocess_image_for_detection(target_path)
@@ -662,24 +678,11 @@ async def swap_video(
         
         # Perform video face swapping
         with torch.no_grad():
-            # Process source image
-            img_a_whole = preprocess_image_for_detection(source_path)
-            
-            detection_result = detect_faces_with_retry(face_app, img_a_whole, 224)
-            
-            if detection_result is None:
-                raise HTTPException(status_code=400, detail="No face detected in source image")
-            
-            img_a_align_crop_list, _ = detection_result
-            
-            img_a_align_crop_pil = Image.fromarray(cv2.cvtColor(img_a_align_crop_list[0], cv2.COLOR_BGR2RGB))
-            img_a = transformer_Arcface(img_a_align_crop_pil)
-            img_id = img_a.view(-1, img_a.shape[0], img_a.shape[1], img_a.shape[2])
-            
-            img_id = img_id.cuda()
-            img_id_downsample = F.interpolate(img_id, size=(112,112))
-            latend_id = model.netArc(img_id_downsample)
-            latend_id = F.normalize(latend_id, p=2, dim=1)
+            # Process source image with automatic pre-crop detection
+            try:
+                latend_id = process_source_image_for_identity(source_path, 224)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Failed to process source image: {str(e)}")
             
             # Process video asynchronously
             loop = asyncio.get_event_loop()
