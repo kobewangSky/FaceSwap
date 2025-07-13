@@ -44,11 +44,11 @@ git clone <repository-url>
 cd FaceSwap
 
 # Create conda environment
-conda create -n faceswap python=3.8
+conda create -n faceswap python=3.11
 conda activate faceswap
 
-# Install other dependencies
-pip install -r requirements.txt
+# Install dependencies using the provided script
+install.bat
 ```
 
 ### Required Model Files
