@@ -37,8 +37,8 @@ logoclass = None
 spNorm = None
 net = None
 
-# 在 app.py 开头添加
-executor = ThreadPoolExecutor(max_workers=4)  # 限制并发数量
+# Thread pool executor for concurrent processing
+executor = ThreadPoolExecutor(max_workers=4)  # Limit concurrent threads
 
 @dataclass
 class VideoTask:
@@ -52,12 +52,17 @@ class VideoTask:
     progress: float = 0.0
     error: Optional[str] = None
 
-# 任务队列
+# Task queue
 task_queue = asyncio.Queue()
 task_status = {}
 
+def _totensor(array):
+    tensor = torch.from_numpy(array)
+    img = tensor.transpose(0, 1).transpose(0, 2).contiguous()
+    return img.float().div(255)
+
 def process_video_sync(video_path, latend_id, model, face_app, result_path, temp_dir, use_mask):
-    """同步视频处理函数"""
+    """Synchronous video processing function"""
     try:
         video_swap(
             video_path, 
@@ -72,7 +77,7 @@ def process_video_sync(video_path, latend_id, model, face_app, result_path, temp
         )
         return True
     except Exception as e:
-        print(f"视频处理错误: {e}")
+        print(f"Video processing error: {e}")
         return False
 
 def init_model():
@@ -234,6 +239,9 @@ async def swap_video(
 ):
     """
     Video face swapping - supports multiple faces
+    - source_image: Source image providing identity features
+    - target_video: Target video where faces will be replaced with source image's face
+    - use_mask: Whether to use face parsing mask for better blending
     """
     try:
         # Generate unique ID
@@ -277,7 +285,7 @@ async def swap_video(
             latend_id = model.netArc(img_id_downsample)
             latend_id = F.normalize(latend_id, p=2, dim=1)
             
-            # 异步处理视频
+            # Process video asynchronously
             loop = asyncio.get_event_loop()
             success = await loop.run_in_executor(
                 executor, 

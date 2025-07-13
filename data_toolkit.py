@@ -71,8 +71,7 @@ class DatasetUpdater:
                     print(f"No face detected in: {image_path}")
                     return False
                 elif len(faces) > 1:
-                    print(f"Multiple faces detected in: {image_path}")
-                    return False
+                    print(f"Multiple faces detected in: {image_path} - using first face")
             except:
                 print(f"Face detection failed for: {image_path}")
                 return False
