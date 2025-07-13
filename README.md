@@ -58,14 +58,21 @@ Download and place the following model files in their respective directories:
 ```
 FaceSwap/
 ├── arcface_model/
-│   └── arcface_checkpoint.tar          # ArcFace identity model
+│ └── arcface_checkpoint.tar # ArcFace identity model (200MB)
 ├── insightface_func/
-│   └── models/
-│       └── antelope/                   # InsightFace detection models
-│           ├── 1k3d68.onnx
-│           ├── 2d106det.onnx
-│           ├── genderage.onnx
-│           └── scrfd_10g_bnkps.onnx
+│ └── models/
+│ └── antelope/ # InsightFace detection models
+│     ├── 1k3d68.onnx # (137MB)
+│     ├── 2d106det.onnx # (4.8MB)
+│     ├── genderage.onnx # (1.3MB)
+│     ├── glintr100.onnx # (249MB)
+│     └── scrfd_10g_bnkps.onnx # (16MB)
+├── parsing_model/
+│ └── checkpoint/
+│ └── 79999_iter.pth # Face parsing model (51MB)
+└── checkpoints/
+    └── people/ # Pre-trained face swap model
+    └── latest_net_G.pth # Generator network weights
 ```
 
 
