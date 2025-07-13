@@ -312,7 +312,7 @@ class RealtimeFaceSwapWeb:
                 # Get latest frame from queue
                 frame = self.frame_queue.get(timeout=0.1)
                 
-                # 处理帧
+                # Process frame
                 start_time = time.time()
                 if self.show_original:
                     processed_frame = frame.copy()
@@ -320,20 +320,20 @@ class RealtimeFaceSwapWeb:
                     processed_frame = self.process_frame(frame)
                 self.processing_time = time.time() - start_time
                 
-                # 计算处理FPS
+                # Calculate processing FPS
                 self.process_frame_count += 1
                 process_elapsed = time.time() - process_start_time
                 self.process_fps = self.process_frame_count / process_elapsed if process_elapsed > 0 else 0
                 
-                # 更新最新处理结果
+                # Update latest processing result
                 self.latest_processed = processed_frame
                 
-                # 将结果放入结果队列
+                # Put result into result queue
                 try:
                     if not self.result_queue.full():
                         self.result_queue.put(processed_frame, block=False)
                     else:
-                        # 队列满了，取出旧结果再放入新结果
+                        # Queue is full, remove old result before adding new result
                         try:
                             self.result_queue.get_nowait()
                         except queue.Empty:
@@ -351,12 +351,12 @@ class RealtimeFaceSwapWeb:
         print("Frame processing thread stopped!")
     
     def display_update_thread(self):
-        """专门负责显示更新的线程"""
+        """Dedicated display update thread"""
         print("Display update thread started!")
         
         while self.running:
             try:
-                # 优先使用处理队列中的结果
+                # Prioritize using results from processing queue
                 if not self.result_queue.empty():
                     result_frame = self.result_queue.get_nowait()
                 elif self.latest_processed is not None:
@@ -367,7 +367,7 @@ class RealtimeFaceSwapWeb:
                     time.sleep(0.01)
                     continue
                 
-                # 添加状态信息
+                # Add status information
                 display_frame = result_frame.copy()
                 status_text = "Original" if self.show_original else "Face Swapped"
                 
@@ -380,10 +380,10 @@ class RealtimeFaceSwapWeb:
                 cv2.putText(display_frame, f'Process Time: {self.processing_time*1000:.0f}ms', (10, 120), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 
-                # 更新当前显示帧
+                # Update current display frame
                 self.current_frame = display_frame
                 
-                # 更新总体FPS计数
+                # Update overall FPS count
                 self.frame_count += 1
                 elapsed_time = time.time() - self.start_time
                 self.fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
@@ -393,12 +393,12 @@ class RealtimeFaceSwapWeb:
             except Exception as e:
                 print(f"Error in display thread: {e}")
             
-            time.sleep(0.03)  # 约30FPS的显示更新
+            time.sleep(0.03)  # Display update at approximately 30FPS
         
         print("Display update thread stopped!")
     
     def start_camera_system(self, camera_id=0):
-        """启动三线程摄像头系统"""
+        """Start three-thread camera system"""
         if self.running:
             return
         
@@ -408,7 +408,7 @@ class RealtimeFaceSwapWeb:
         self.process_frame_count = 0
         self.start_time = time.time()
         
-        # 清空队列
+        # Clear queues
         while not self.frame_queue.empty():
             try:
                 self.frame_queue.get_nowait()
@@ -420,7 +420,7 @@ class RealtimeFaceSwapWeb:
             except queue.Empty:
                 break
         
-        # 启动三个线程
+        # Start three threads
         self.camera_thread_ref = threading.Thread(target=self.camera_capture_thread, args=(camera_id,))
         self.process_thread_ref = threading.Thread(target=self.frame_processing_thread)
         self.display_thread_ref = threading.Thread(target=self.display_update_thread)
@@ -436,7 +436,7 @@ class RealtimeFaceSwapWeb:
         print("Multi-threaded camera system started!")
     
     def stop_camera_system(self):
-        """停止摄像头系统"""
+        """Stop camera system"""
         self.running = False
         print("Stopping camera system...")
 
@@ -505,7 +505,7 @@ def video_feed():
                                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
                 except Exception as e:
                     print(f"Error encoding frame: {e}")
-            time.sleep(0.03)  # 约30FPS
+            time.sleep(0.03)  # Approximately 30FPS
     
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
